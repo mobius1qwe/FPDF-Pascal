@@ -3748,7 +3748,7 @@ function Split(const AString: string; const ADelimiter: string; ATrimLeft: boole
 var
   p1, p2, i: Integer;
 begin
-  SetLength(Result,0);
+  Result := nil;
   i := 0;
   p1 := 1;
   p2 := pos(ADelimiter, AString);
