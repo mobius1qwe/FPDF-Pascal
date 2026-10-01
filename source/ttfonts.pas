@@ -19,6 +19,12 @@ interface
 uses
   SysUtils, Classes;
 
+{$IfDef NEXTGEN}
+type
+  AnsiString = RawByteString;
+  AnsiChar = UTF8Char;
+{$EndIf}
+
 type
   ETTFontError = class(Exception);
 
@@ -50,6 +56,8 @@ type
     fXMin, fYMin, fXMax, fYMax: Integer;          // escala 1000
     fItalicAngle: Double;
     fIsFixedPitch: Boolean;
+    fUnderlinePosition, fUnderlineThickness: Integer;  // escala 1000
+    fWeightClass: Integer;
     fPostScriptName: string;
 
     function U8(AOfs: Cardinal): Cardinal;
@@ -103,6 +111,9 @@ type
     property XMax: Integer read fXMax;
     property YMax: Integer read fYMax;
     property ItalicAngle: Double read fItalicAngle;
+    property UnderlinePosition: Integer read fUnderlinePosition;    // escala 1000
+    property UnderlineThickness: Integer read fUnderlineThickness;  // escala 1000
+    property WeightClass: Integer read fWeightClass;                // 100..900 (400 = normal)
     property PostScriptName: string read fPostScriptName;
   end;
 
@@ -114,6 +125,7 @@ const
   cSfntTtcf = $74746366;       // 'ttcf'
   cSfntOtto = $4F54544F;       // 'OTTO'
   cHeadMagic = $5F0F3CF5;
+  cEmptyTable: TTTFontTable = (Tag: ''; Offset: 0; Size: 0);
 
 { TTTFontFile }
 
@@ -281,6 +293,14 @@ procedure TTTFontFile.ParseOS2;
 var
   t: TTTFontTable;
 begin
+  t := cEmptyTable;
+  fWeightClass := 400;
+  if FindTable('OS/2', t) and (t.Size >= 6) then
+  begin
+    fWeightClass := Integer(U16(t.Offset + 4));
+    if (fWeightClass < 1) or (fWeightClass > 1000) then
+      fWeightClass := 400;
+  end;
   if FindTable('OS/2', t) and (t.Size >= 90) and (U16(t.Offset) >= 2) then
   begin
     fCapHeight := Scale1000(S16(t.Offset + 88));
@@ -293,11 +313,18 @@ procedure TTTFontFile.ParsePost;
 var
   t: TTTFontTable;
 begin
+  t := cEmptyTable;
   fItalicAngle := 0;
   fIsFixedPitch := False;
+  fUnderlinePosition := -100;
+  fUnderlineThickness := 50;
   if FindTable('post', t) and (t.Size >= 16) then
   begin
     fItalicAngle := (Integer(U32(t.Offset + 4))) / 65536;
+    fUnderlinePosition := Scale1000(S16(t.Offset + 8));
+    fUnderlineThickness := Scale1000(S16(t.Offset + 10));
+    if fUnderlineThickness <= 0 then
+      fUnderlineThickness := 50;
     fIsFixedPitch := U32(t.Offset + 12) <> 0;
   end;
 end;
@@ -309,6 +336,7 @@ var
   rec, platform, nameId, len, ofs, j: Cardinal;
   s: string;
 begin
+  t := cEmptyTable;
   fPostScriptName := '';
   if not FindTable('name', t) or (t.Size < 6) then
     Exit;
@@ -448,6 +476,7 @@ var
   n, i: Integer;
   plat, enc, sub, fmt, bestOfs, bestScore, score: Cardinal;
 begin
+  t := cEmptyTable;
   SetLength(fCharMap, 0);
   fHasCmap := False;
   if not FindTable('cmap', t) or (t.Size < 4) then
@@ -596,6 +625,7 @@ var
 
   function Raw(AOfs, ASize: Cardinal): AnsiString;
   begin
+    Result := '';
     SetLength(Result, ASize);
     if ASize > 0 then
       Move(fData[AOfs], Result[1], ASize);
@@ -603,6 +633,7 @@ var
 
   function BE32(V: Cardinal): AnsiString;
   begin
+    Result := '';
     SetLength(Result, 4);
     Result[1] := AnsiChar(V shr 24);
     Result[2] := AnsiChar((V shr 16) and $FF);
@@ -612,6 +643,7 @@ var
 
   function BE16(V: Cardinal): AnsiString;
   begin
+    Result := '';
     SetLength(Result, 2);
     Result[1] := AnsiChar((V shr 8) and $FF);
     Result[2] := AnsiChar(V and $FF);
@@ -651,11 +683,14 @@ var
   end;
 
 begin
+  outTabs := nil;
+  t := cEmptyTable;
   if not fHasCmap then
     raise ETTFontError.Create('TrueType: fonte sem cmap utilizavel');
   glyf := RequireTable('glyf');
   loca := RequireTable('loca');
 
+  used := nil;
   SetLength(used, fNumGlyphs);
   SetLength(stack, 0);
   Push(0);
@@ -691,6 +726,7 @@ begin
 
   // glyf + loca (formato longo), glyphs nao usados ficam vazios
   glyfData := '';
+  locaData := '';
   SetLength(locaData, (fNumGlyphs + 1) * 4);
   for n := 0 to fNumGlyphs do
   begin

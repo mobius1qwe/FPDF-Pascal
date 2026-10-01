@@ -20,10 +20,27 @@ FPDF has other benefits: high level functions. Here is a list of its main featur
    - `<u>underlined</u>`
    - `<a href="http://link.com">text</a>`
    - `<br>`
-- ~~TrueType, Type1 and encoding support~~
+- TrueType fonts with Unicode text (~~Type1~~)
 - Page compression
 
     (Note: ~~Strike~~ = not implemented in Pascal translation)
+
+# TrueType fonts, charts and geometric primitives
+
+- **TrueType + Unicode:** `AddFont(Family, Style, 'file.ttf')` registers a TrueType
+  font (one call per style). After `SetFont`, `Cell`, `MultiCell`, `Write`, `Text`
+  and `GetStringWidth` accept any Unicode text (accents, Greek, Cyrillic, symbols...).
+  Only the used glyphs are embedded (subset, Type0 / Identity-H) and the text can be
+  copied from the PDF. Fonts with TrueType outlines (`glyf`) are supported; TTC
+  collections and OpenType/CFF fonts are not.
+  Demo: `truetype`
+- **Bar charts:** unit `fpdf_charts`, class `TFPDFBarChart`: horizontal or vertical,
+  one or more series, legend, sorting, top N, grid, fixed axis and automatic height
+  (`CalcHeight`) to paginate. `FontFamily` can point to a TrueType font.
+  Demo: `graficos`
+- **Geometric primitives** in `TFPDFExt`: `Circle`, `Ellipse`, `Arc`, `Sector`,
+  `Polygon`, `PolyLine` and `Curve` (cubic Bézier).
+  Demo: `primitivas`
 
 # What Can I do with FPDF Pascal ?
 Please check the file: [FPDFPascalTest.pdf](https://github.com/Projeto-ACBr-Oficial/FPDF-Pascal/tree/main/demo/files/FPDFPascalTest.pdf)
@@ -88,6 +105,8 @@ Note that at the beginning of Unit **fpf_ext.pas**, you can turn on/off, the sup
 
 - **DEFINE USE_SYNAPSE:** Extend the "Image" method, allowing inform a Image by URL, and also allow to use "SetProtection" (password) features
 
+- **DEFINE USE_SYNAPSE_OPENSSL3:** With USE_SYNAPSE, use the Synapse unit `ssl_openssl3` instead of `ssl_openssl` (needed with the official Synapse, https://github.com/geby/synapse)
+
 - **DEFINE DelphiZXingQRCode:** Allows the generation of **QRCodes**
 
  
@@ -102,6 +121,7 @@ Note that at the beginning of Unit **fpf_ext.pas**, you can turn on/off, the sup
 | TFPDFExt.RoundedRect | http://www.fpdf.org/en/script/script35.php | Christophe Prugnaud |
 | TFPDFExt.AddLayer | http://www.fpdf.org/en/script/script97.php | Oliver |
 | TFPDFExt.SetProtection | http://www.fpdf.org/en/script/script37.php | Klemen Vodopivec |
+| TFPDFExt.Sector | http://www.fpdf.org/en/script/script19.php | Maxime Delorme |
 
 # About the translator
 Daniel Simões de Almeida is a Pascal multiplataform developer.

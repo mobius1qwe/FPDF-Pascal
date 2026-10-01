@@ -22,6 +22,12 @@ interface
 uses
   SysUtils;
 
+{$IfDef NEXTGEN}
+type
+  AnsiString = RawByteString;
+  AnsiChar = UTF8Char;
+{$EndIf}
+
 type
   TUnicodeCodepoints = array of Cardinal;
 
@@ -30,6 +36,17 @@ const
 
 // "S" -> codepoints Unicode. Sequencias invalidas viram U+FFFD.
 function UTF8StringToCodepoints(const S: string): TUnicodeCodepoints;
+
+// Fatia de codepoints -> "string" nativa (UTF-16 no Delphi Unicode, UTF-8 no
+// FPC e Delphi antigo). AStart e 0-based; ACount < 0 vai ate o fim.
+function CodepointsToString(const ACodepoints: TUnicodeCodepoints;
+  AStart: Integer = 0; ACount: Integer = -1): string;
+
+// Windows-1252 <-> codepoints (pra texto que nao esta em UTF-8). Codepoints
+// sem equivalente em CP1252 viram '?'.
+function CP1252ToCodepoints(const S: AnsiString): TUnicodeCodepoints;
+function CodepointsToCP1252(const ACodepoints: TUnicodeCodepoints;
+  AStart: Integer = 0; ACount: Integer = -1): AnsiString;
 
 // codepoints -> bytes UTF-16BE (pares substitutos pra U+10000..U+10FFFF).
 function CodepointsToUTF16BE(const ACodepoints: TUnicodeCodepoints;
@@ -59,12 +76,14 @@ end;
 
 function UTF8StringToCodepoints(const S: string): TUnicodeCodepoints;
 var
-  n, i, len, cnt, j: Integer;
+  n, i, len: Integer;
+{$IfDef UNICODE}
+  c, c2: Cardinal;
+{$Else}
+  cnt, j: Integer;
   b: Byte;
   cp, minCp: Cardinal;
   ok: Boolean;
-{$IfDef UNICODE}
-  c, c2: Cardinal;
 {$EndIf}
 begin
   Result := nil;
@@ -175,6 +194,7 @@ var
   end;
 
 begin
+  Result := '';
   SetLength(Result, 2 + Length(ACodepoints) * 4);
   p := 1;
   if AddBOM then
@@ -199,6 +219,136 @@ begin
   SetLength(Result, p - 1);
 end;
 
+const
+  Cp1252High: array[$80..$9F] of Word = (
+    $20AC, 0, $201A, $0192, $201E, $2026, $2020, $2021,
+    $02C6, $2030, $0160, $2039, $0152, 0, $017D, 0,
+    0, $2018, $2019, $201C, $201D, $2022, $2013, $2014,
+    $02DC, $2122, $0161, $203A, $0153, 0, $017E, $0178);
+
+procedure ClampSlice(ALen: Integer; var AStart, ACount: Integer);
+begin
+  if AStart < 0 then
+    AStart := 0;
+  if (ACount < 0) or (AStart + ACount > ALen) then
+    ACount := ALen - AStart;
+  if ACount < 0 then
+    ACount := 0;
+end;
+
+function CodepointsToString(const ACodepoints: TUnicodeCodepoints;
+  AStart, ACount: Integer): string;
+var
+  i, n: Integer;
+  c: Cardinal;
+begin
+  ClampSlice(Length(ACodepoints), AStart, ACount);
+  {$IfDef UNICODE}
+  SetLength(Result, ACount * 2);
+  n := 0;
+  for i := AStart to AStart + ACount - 1 do
+  begin
+    c := ACodepoints[i];
+    if (c > $10FFFF) or ((c >= $D800) and (c <= $DFFF)) then
+      c := UNICODE_REPLACEMENT;
+    if c >= $10000 then
+    begin
+      Dec(c, $10000);
+      Inc(n);
+      Result[n] := Char($D800 + (c shr 10));
+      Inc(n);
+      Result[n] := Char($DC00 + (c and $3FF));
+    end
+    else
+    begin
+      Inc(n);
+      Result[n] := Char(c);
+    end;
+  end;
+  {$Else}
+  Result := '';
+  SetLength(Result, ACount * 4);
+  n := 0;
+  for i := AStart to AStart + ACount - 1 do
+  begin
+    c := ACodepoints[i];
+    if (c > $10FFFF) or ((c >= $D800) and (c <= $DFFF)) then
+      c := UNICODE_REPLACEMENT;
+    if c < $80 then
+    begin
+      Inc(n);
+      Result[n] := Char(c);
+    end
+    else if c < $800 then
+    begin
+      Result[n + 1] := Char($C0 or (c shr 6));
+      Result[n + 2] := Char($80 or (c and $3F));
+      Inc(n, 2);
+    end
+    else if c < $10000 then
+    begin
+      Result[n + 1] := Char($E0 or (c shr 12));
+      Result[n + 2] := Char($80 or ((c shr 6) and $3F));
+      Result[n + 3] := Char($80 or (c and $3F));
+      Inc(n, 3);
+    end
+    else
+    begin
+      Result[n + 1] := Char($F0 or (c shr 18));
+      Result[n + 2] := Char($80 or ((c shr 12) and $3F));
+      Result[n + 3] := Char($80 or ((c shr 6) and $3F));
+      Result[n + 4] := Char($80 or (c and $3F));
+      Inc(n, 4);
+    end;
+  end;
+  {$EndIf}
+  SetLength(Result, n);
+end;
+
+function CP1252ToCodepoints(const S: AnsiString): TUnicodeCodepoints;
+var
+  i: Integer;
+  b: Byte;
+begin
+  Result := nil;
+  SetLength(Result, Length(S));
+  for i := 1 to Length(S) do
+  begin
+    b := Ord(S[i]);
+    if (b >= $80) and (b <= $9F) and (Cp1252High[b] <> 0) then
+      Result[i - 1] := Cp1252High[b]
+    else
+      Result[i - 1] := b;
+  end;
+end;
+
+function CodepointsToCP1252(const ACodepoints: TUnicodeCodepoints;
+  AStart, ACount: Integer): AnsiString;
+var
+  i, b: Integer;
+  c: Cardinal;
+begin
+  ClampSlice(Length(ACodepoints), AStart, ACount);
+  Result := '';
+  SetLength(Result, ACount);
+  for i := 0 to ACount - 1 do
+  begin
+    c := ACodepoints[AStart + i];
+    if (c < $80) or ((c >= $A0) and (c <= $FF)) then
+      Result[i + 1] := AnsiChar(c)
+    else
+    begin
+      Result[i + 1] := '?';
+      for b := $80 to $9F do
+        if (Cp1252High[b] <> 0) and (Cp1252High[b] = c) then
+        begin
+          Result[i + 1] := AnsiChar(b);
+          Break;
+        end;
+    end;
+  end;
+end;
+
 function UTF8ToUTF16BE(const S: string; AddBOM: Boolean): AnsiString;
 begin
   Result := CodepointsToUTF16BE(UTF8StringToCodepoints(S), AddBOM);
@@ -211,6 +361,7 @@ var
   i: Integer;
   b: Byte;
 begin
+  Result := '';
   SetLength(Result, Length(Data) * 2);
   for i := 1 to Length(Data) do
   begin
@@ -225,6 +376,7 @@ var
   i, n: Integer;
   c: AnsiChar;
 begin
+  Result := '';
   SetLength(Result, Length(Data) * 2);
   n := 0;
   for i := 1 to Length(Data) do

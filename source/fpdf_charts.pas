@@ -59,6 +59,8 @@ type
     fBarThickness: Double;
     fValueFormat: string;
     fEmptyText: string;
+    fFontFamily: string;
+    fTitleStyle: string;
     fAxisMax: Double;
     fMaxLabelFraction: Double;
     fTitleColor: TFPDFChartColor;
@@ -111,6 +113,11 @@ type
     // Mascara de FormatFloat para valores e eixo (padrao '0.##')
     property ValueFormat: string read fValueFormat write fValueFormat;
     property EmptyText: string read fEmptyText write fEmptyText;
+    // Familia da fonte (padrao 'Helvetica'). Pode ser uma TrueType do AddFont,
+    // pra rotulos Unicode; nesse caso adicione tambem o estilo do titulo.
+    property FontFamily: string read fFontFamily write fFontFamily;
+    // Estilo da fonte do titulo (padrao 'B')
+    property TitleStyle: string read fTitleStyle write fTitleStyle;
     // Fixa o fim do eixo; 0 = automatico ("numeros bonitos" 1-2-5)
     property AxisMax: Double read fAxisMax write fAxisMax;
     // Fracao maxima da largura que os rotulos de categoria (horizontal) ocupam
@@ -134,6 +141,13 @@ uses
 type
   // acesso aos campos protegidos de TFPDF (estado grafico a restaurar)
   TPDFAccess = class(TFPDFExt);
+
+// Acesso aos membros protegidos do TFPDF. O cast passa por Pointer porque o
+// objeto nao e um TPDFAccess de verdade (o FPC com -CR acusaria EInvalidCast).
+function PDFAccess(APDF: TFPDFExt): TPDFAccess;
+begin
+  Result := TPDFAccess(Pointer(APDF));
+end;
 
 const
   cPalette: array[0..5] of TFPDFChartColor = (
@@ -240,6 +254,8 @@ begin
   fTitleSizePt := 10;
   fBarThickness := 1.0;
   fValueFormat := '0.##';
+  fFontFamily := 'Helvetica';
+  fTitleStyle := 'B';
   fEmptyText := 'Sem dados no per' + Chr(237) + 'odo';
   fAxisMax := 0;
   fMaxLabelFraction := 0.4;
@@ -357,8 +373,8 @@ var
   fs, ts, band, h: Double;
   nCat, nSer: Integer;
 begin
-  fs := fFontSizePt / TPDFAccess(APDF).k;
-  ts := fTitleSizePt / TPDFAccess(APDF).k;
+  fs := fFontSizePt / PDFAccess(APDF).k;
+  ts := fTitleSizePt / PDFAccess(APDF).k;
   nCat := Length(VisibleOrder);
   nSer := Length(fSeries);
   if (nSer < 1) then
@@ -391,7 +407,7 @@ var
   order: TIntArray;
   i: Integer;
 begin
-  acc := TPDFAccess(APDF);
+  acc := PDFAccess(APDF);
   oldFamily := acc.FontFamily;
   oldStyle := acc.FontStyle;
   oldSize := acc.FontSizePt;
@@ -411,15 +427,15 @@ begin
     // titulo
     if (fTitle <> '') then
     begin
-      APDF.SetFont('Helvetica', 'B', fTitleSizePt);
-      ts := TPDFAccess(APDF).FontSize;
+      APDF.SetFont(fFontFamily, fTitleStyle, fTitleSizePt);
+      ts := PDFAccess(APDF).FontSize;
       SetColors(APDF, fTitleColor, False, False, True);
       APDF.Text(vX, y + ts, FitText(APDF, fTitle, vWidth));
       y := y + ts * 1.8;
     end;
 
-    APDF.SetFont('Helvetica', '', fFontSizePt);
-    fs := TPDFAccess(APDF).FontSize;
+    APDF.SetFont(fFontFamily, '', fFontSizePt);
+    fs := PDFAccess(APDF).FontSize;
 
     // legenda (uma linha; itens alem da largura do grafico sao cortados pela pagina, mantenha nomes curtos)
     if ShowLegendNow then
@@ -464,7 +480,7 @@ var
   txt: string;
   v: Double;
 begin
-  fs := TPDFAccess(APDF).FontSize;
+  fs := PDFAccess(APDF).FontSize;
   nCat := Length(AOrder);
   nSer := Length(fSeries);
 
@@ -556,7 +572,7 @@ var
   txt: string;
   v: Double;
 begin
-  fs := TPDFAccess(APDF).FontSize;
+  fs := PDFAccess(APDF).FontSize;
   nCat := Length(AOrder);
   nSer := Length(fSeries);
 
