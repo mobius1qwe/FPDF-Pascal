@@ -1,9 +1,16 @@
 {
   FPDF Pascal - Unicode Helpers
   https://github.com/Projeto-ACBr-Oficial/FPDF-Pascal
-  
-  Unit para auxiliar conversão UTF-8, UTF-16BE e código-pontos
-  Seguindo o plano de implementação do suporte Unicode UTF-8 completo
+
+  Funcoes puras para converter texto entre UTF-8 / UTF-16 (string nativa),
+  codepoints Unicode e UTF-16BE (o que o PDF usa em fontes Type0/Identity-H).
+
+  - FPC/Lazarus: "string" e UTF-8 (AnsiString) em todas as plataformas.
+  - Delphi Unicode (2009+): "string" e UTF-16.
+  - Delphi antigo (pre-Unicode): "string" e tratada como UTF-8.
+
+  Sem dependencia de WinAPI, iconv ou codepage do sistema: o resultado e o mesmo
+  em Windows, Linux, macOS e demais targets do Lazarus.
 }
 
 unit fpdf_unicode;
@@ -13,366 +20,251 @@ unit fpdf_unicode;
 interface
 
 uses
-  SysUtils, Classes, Math, StrUtils;
-
-{$IfDef FPC}
-  type
-    AnsiString = RawByteString;
-{$Else}
-  type
-    PAnsiChar = ^AnsiChar;
-{$EndIf}
+  SysUtils;
 
 type
-  { TFFUnicodeHelpers - Conjunto de funções para manipular texto UTF-8/UTF-16BE }
-
-  TFFUnicodeHelpers = class
-  private
-    {$ifdef NEXTGEN}
-    function GetCodepoint(const AString: string): Integer;
-    {$else}
-    function GetCodepoint(const AString: string): Byte;
-    function NextCharIndex(ACodepoint: Integer; const S: string; ACPos: Integer): Integer;
-    {$endif}
-
-  public
-    // Converte string UTF-8 (ou Unicode em Delphi) para array de código-pontos
-    // FPC/Lazarus: string é UTF-8
-    // Delphi Unicode 2009+: string é UnicodeString
-    function UTF8StringToCodepoints(const S: string): TArray<Integer>;
-
-    // Converte texto UTF-8/Unicode para UTF-16BE (Big Endian)
-    // Retorna AnsiString com bytes UTF-16BE
-    function UTF8ToUTF16BE(const S: string; AddBOM: Boolean = False): AnsiString;
-
-    // Hex encode de AnsiString para string PDF hex
-    function HexEncode(const Data: AnsiString): String;
-
-    // Convert código-ponto (0..FFFF) para width em pontos (escala 1000)
-    function CodepointToWidth(WidthUnits: Integer; Scale: Double = 1.0): Integer;
-    
-    // Escape string binária para PDF (evitar < > \ no interior de strings)
-    function EscapePDFString(const Data: AnsiString): AnsiString;
-
-    { TFFCodepointSize - Tamanho em bytes de cada código-ponto no UTF-8 }
-  private
-    const
-      UTF8CodepointSize: array[0..65535] of Byte = (
-        // 0..127 (basic multilingual plane BMP)
-        $01, $01, $01, $01, $01, $01, $01, $01, $01, $01, $01, $01, $01, $01, $01, $01,
-        // 128..255 (Latin-1 supplementary)
-        $02, $02, $02, $02, $02, $02, $02, $02, $02, $02, $02, $02, $02, $02, $02, $02,
-        // ... (continua preenchendo até 65535)
-      );
-    procedure InitializeCodepointSize;
-  end;
+  TUnicodeCodepoints = array of Cardinal;
 
 const
-  CFFUnicodeHelpers: TFFUnicodeHelpers = nil; // Global instance
+  UNICODE_REPLACEMENT = $FFFD;
 
-function UTF8StringToCodepoints(const S: string): TArray<Integer>; external 'CFFUnicodeHelpers';
-function UTF8ToUTF16BE(const S: string; AddBOM: Boolean = False): AnsiString; external 'CFFUnicodeHelpers';
-function HexEncode(const Data: AnsiString): String; external 'CFFUnicodeHelpers';
-function CodepointToWidth(WidthUnits: Integer; Scale: Double = 1.0): Integer; external 'CFFUnicodeHelpers';
-function EscapePDFString(const Data: AnsiString): AnsiString; external 'CFFUnicodeHelpers';
+// "S" -> codepoints Unicode. Sequencias invalidas viram U+FFFD.
+function UTF8StringToCodepoints(const S: string): TUnicodeCodepoints;
+
+// codepoints -> bytes UTF-16BE (pares substitutos pra U+10000..U+10FFFF).
+function CodepointsToUTF16BE(const ACodepoints: TUnicodeCodepoints;
+  AddBOM: Boolean = False): AnsiString;
+
+// "S" -> bytes UTF-16BE (opcionalmente com BOM FE FF).
+function UTF8ToUTF16BE(const S: string; AddBOM: Boolean = False): AnsiString;
+
+// bytes -> string hexadecimal maiuscula ("<...>" fica por conta de quem chama).
+function HexEncode(const Data: AnsiString): string;
+
+// Escapa \ ( ) e CR/LF pra uso em string literal PDF "(...)".
+function EscapePDFString(const Data: AnsiString): AnsiString;
+
+// Largura em unidades da fonte -> escala PDF de 1000 unidades por em.
+function CodepointToWidth(AWidthUnits, AUnitsPerEm: Integer): Integer;
 
 implementation
 
-{ TFFUnicodeHelpers }
-
-{$ifdef NEXTGEN}
-procedure TFFUnicodeHelpers.InitializeCodepointSize;
-var
-  i, cp: Integer;
-  surrogateStart: Integer;
+procedure AddCodepoint(var A: TUnicodeCodepoints; var N: Integer; C: Cardinal);
 begin
-  // Initialize UTF-8 codepoint size mapping for all BMP + supplementary planes
-  
-  // Basic plane (U+0000 to U+FFFF) - already mostly set by constructor
-  
-  // Handle supplementary characters (U+10000 and above) using surrogate pairs
-  // For UTF-8, a surrogate pair encodes a single codepoint in U+10000..U+10FFFF
-  
-  // Pre-fill common values (0-255 should be set by default initialization)
+  if N >= Length(A) then
+    SetLength(A, Length(A) + 16 + Length(A) div 2);
+  A[N] := C;
+  Inc(N);
 end;
 
-{$else}
-procedure TFFUnicodeHelpers.InitializeCodepointSize;
+function UTF8StringToCodepoints(const S: string): TUnicodeCodepoints;
 var
-  i: Integer;
+  n, i, len, cnt, j: Integer;
+  b: Byte;
+  cp, minCp: Cardinal;
+  ok: Boolean;
+{$IfDef UNICODE}
+  c, c2: Cardinal;
+{$EndIf}
 begin
-  SetLength(UTF8CodepointSize, 65536);
-  
-  // Initialize BMP range (0-65535) - UTF-8 length for each codepoint
-  // Codepoints 0-127: 1 byte
-  // Codepoints 128-2047: 2 bytes
-  // Codepoints 2048-65535: 3 bytes
-  
-  for i := 0 to 127 do
-    UTF8CodepointSize[i] := 1;
-    
-  for i := 128 to 2047 do
-    UTF8CodepointSize[i] := 2;
-    
-  for i := 2048 to 65535 do
-    UTF8CodepointSize[i] := 3;
-end;
-
-{$endif}
-
-function TFFUnicodeHelpers.GetCodepoint(const AString: string): Byte;
-begin
-  {$ifdef NEXTGEN}
-  Result := ord(AString[1]);
-  // For NEXTGEN, string is Unicode (UTF-16)
-  if Result > 255 then
-    Result := GetUnicodeChar(AString, 0);
-  {$else}
-  Result := Byte(AString[1]);
-  {$endif}
-end;
-
-function TFFUnicodeHelpers.NextCharIndex(ACodepoint: Integer; const S: string; ACPos: Integer): Integer;
-var
-  cp: Integer;
-begin
-  Result := ACPos + 1;
-  
-  {$ifdef NEXTGEN}
-  // Delphi UnicodeString - use WideChar conversion
-  cp := ord(AString[ACPos]);
-  if (cp < 65536) then
-  begin
-    // Single char codepoint
-    Result := ACPos + 1;
-  end
-  else
-  begin
-    // Surrogate pair for characters outside BMP
-    Result := ACPos + 2;
-  end;
-  {$else}
-  // ASCII string - each byte is a character
-  Result := ACPos + 1;
-  {$endif}
-end;
-
-function TFFUnicodeHelpers.UTF8StringToCodepoints(const S: string): TArray<Integer>;
-var
-  i, cpStart: Integer;
-  cp: Integer;
-begin
-  Result := New(TArray<Integer>);
-  
-  // For FPC/Lazarus: string is UTF-8 (each byte = char index)
-  // For Delphi UnicodeString: string is UTF-16
-  
-  i := 0;
-  while i < Length(S) do
-  begin
-    cpStart := i;
-    cp := ord(S[i]);
-    
-    {$ifdef NEXTGEN}
-    // Convert UTF-16 to codepoints (handle surrogates)
-    if (cp < 65536) then
-      cp := cp
-    else
-    begin
-      // Surrogate pair detected - get second half
-      if i + 1 <= Length(S) then
-        cp := (((cp - 0xD800) div 0x400) * 0x400 + (ord(S[i+1]) - 0xDC00)) + 0x10000;
-    end;
-    
-    // UTF-16 surrogate pair to UTF-8 conversion is done internally by GetUnicodeChar
-    Result := SetLength(Result, Result.Length);
-    {$else}
-    // FPC: string is UTF-8, already codepoint-sized (variable)
-    Result := SetLength(Result, 1);
-    cp := ord(S[cpStart]);
-    if (cp >= 65280 and cp < 65536) then
-      cp := (cp - 65280) + 65536;
-    
-    // UTF-8 to Unicode codepoint conversion is implicit via ord() on variable strings
-    Result[i] := cp;
-    Inc(i);
-    {$endif}
-  end;
-end;
-
-function TFFUnicodeHelpers.UTF8ToUTF16BE(const S: string; AddBOM: Boolean = False): AnsiString;
-var
-  i, len, j: Integer;
-  utf8Bytes, cp: Integer;
-  utf16Char: Integer;
-  resultLen: Integer;
-begin
-  Result := '';
-  
-  // Get string encoding info (UTF-8 or Unicode)
-  {$ifdef NEXTGEN}
-  // Delphi UnicodeString - each char is a UTF-16 codepoint
+  Result := nil;
+  n := 0;
   len := Length(S);
-  if AddBOM then
-    SetLength(Result, 3 + len * 2)
-  else
-    SetLength(Result, len * 2);
-    
-  Result[1] := $FF;
-  Result[2] := $FE;
-  Result[3] := $00;
-  Result[4] := $00;
-  
-  // Convert UTF-16 to UTF-8 bytes (UTF-16BE stored as big-endian byte pairs)
-  j := 5;
-  for i := 0 to len - 1 do
-  begin
-    utf16Char := ord(S[i]);
-    
-    if utf16Char >= 0x10000 then
-    begin
-      // Surrogate pair needed
-      cp := (utf16Char - 0xD800) mod 0x400;
-      cp := ((cp + 0x400) shl 8);
-      
-      utf8Bytes := (utf16Char - 0xDC00) mod 0x400;
-      utf16Char := $FFFD;
-      
-      j := j + 3;
-      Result[j+2] := andb(utf8Bytes and $7f, $ff);
-      Result[j+1] := orb(andb(utf8Bytes and $80, $ff) shl 8);
-    end
-    else
-    begin
-      // Single byte UTF-8 encoding for BMP
-      j := j + 2;
-      Result[j+1] := ord(S[i]);
-    end;
-    
-    SetLength(Result, Result.Length);
-  end;
-  
-  {$else}
-  // FPC: string is UTF-8
-  len := Length(S);
-  if AddBOM then
-    SetLength(Result, 3 + len)
-  else
-    SetLength(Result, len);
-    
-  Result[1] := #239;
-  Result[2] := #187;
-  Result[3] := #189;
-  
-  // UTF-8 to UTF-16BE conversion for ASCII range (simplified - only BMP)
-  j := 4;
+  SetLength(Result, len);
+
+  {$IfDef UNICODE}
+  // string em UTF-16 (Delphi 2009+)
   i := 1;
   while i <= len do
   begin
-    cp := ord(S[i]);
-    
-    if cp < 128 then
-    begin
-      // Single UTF-8 byte = single codepoint
-      utf16Char := cp;
-      j += 2;
-      Result[j+1] := andb(cp and $7f, $ff);
-      Result[j] := orb(andb(cp and $80, $ff) shl 8);
-    end
-    else if cp < 2048 then
-    begin
-      // Multi-byte UTF-8 to single codepoint
-      utf16Char := cp - 192;
-      j += 2;
-      Result[j+1] := andb(utf16Char and $7f, $ff);
-      Result[j] := orb(andb(utf16Char and $80, $ff) shl 8);
-    end
-    else if cp < 65536 then
-    begin
-      // Already BMP codepoint - encode as UTF-16BE
-      utf16Char := cp;
-      j += 2;
-      Result[j+1] := andb(utf16Char and $ff, $ff);
-      Result[j] := orb(andb(utf16Char and $ff00, $ff) shr 8);
-    end;
-    
+    c := Ord(S[i]);
     Inc(i);
+    if (c >= $D800) and (c <= $DBFF) then
+    begin
+      if (i <= len) and (Ord(S[i]) >= $DC00) and (Ord(S[i]) <= $DFFF) then
+      begin
+        c2 := Ord(S[i]);
+        Inc(i);
+        c := $10000 + ((c - $D800) shl 10) + (c2 - $DC00);
+      end
+      else
+        c := UNICODE_REPLACEMENT;
+    end
+    else if (c >= $DC00) and (c <= $DFFF) then
+      c := UNICODE_REPLACEMENT;
+    AddCodepoint(Result, n, c);
   end;
-  
-  {$endif}
-end;
-
-function TFFUnicodeHelpers.HexEncode(const Data: AnsiString): String;
-var
-  i, j: Integer;
-  str: String;
-  c: Char;
-begin
-  Result := '';
-  str := '';
-  
-  // Convert each byte to two hex characters
-  for i := Low(Data) to High(Data) do
+  {$Else}
+  // string em UTF-8 (FPC e Delphi pre-Unicode)
+  i := 1;
+  while i <= len do
   begin
-    c := chr(13 + (ord(Data[i]) shr 4));
-    str := str + chr(c);
-    
-    c := chr(13 + (ord(Data[i]) and $f));
-    str := str + chr(c);
+    b := Ord(S[i]);
+    if b < $80 then
+    begin
+      AddCodepoint(Result, n, b);
+      Inc(i);
+      Continue;
+    end;
+
+    cnt := 0;
+    cp := 0;
+    minCp := 0;
+    if (b and $E0) = $C0 then
+    begin
+      cnt := 1;
+      cp := b and $1F;
+      minCp := $80;
+    end
+    else if (b and $F0) = $E0 then
+    begin
+      cnt := 2;
+      cp := b and $0F;
+      minCp := $800;
+    end
+    else if (b and $F8) = $F0 then
+    begin
+      cnt := 3;
+      cp := b and $07;
+      minCp := $10000;
+    end;
+
+    ok := (cnt > 0) and (i + cnt <= len);
+    if ok then
+      for j := 1 to cnt do
+      begin
+        b := Ord(S[i + j]);
+        if (b and $C0) <> $80 then
+        begin
+          ok := False;
+          Break;
+        end;
+        cp := (cp shl 6) or (b and $3F);
+      end;
+
+    if ok and ((cp < minCp) or (cp > $10FFFF) or ((cp >= $D800) and (cp <= $DFFF))) then
+      ok := False;
+
+    if ok then
+    begin
+      AddCodepoint(Result, n, cp);
+      Inc(i, cnt + 1);
+    end
+    else
+    begin
+      AddCodepoint(Result, n, UNICODE_REPLACEMENT);
+      Inc(i);
+    end;
   end;
-  
-  Result := str;
+  {$EndIf}
+
+  SetLength(Result, n);
 end;
 
-function TFFUnicodeHelpers.CodepointToWidth(WidthUnits: Integer; Scale: Double): Integer;
+function CodepointsToUTF16BE(const ACodepoints: TUnicodeCodepoints;
+  AddBOM: Boolean): AnsiString;
+var
+  i, p: Integer;
+  c: Cardinal;
+
+  procedure PutWord(W: Cardinal);
+  begin
+    Result[p] := AnsiChar(W shr 8);
+    Result[p + 1] := AnsiChar(W and $FF);
+    Inc(p, 2);
+  end;
+
 begin
-  // Default width scale: 1000 units per em
-  Result := WidthUnits * (Scale / 1000);
-  if (Result < 1) then
-    Result := 1;
+  SetLength(Result, 2 + Length(ACodepoints) * 4);
+  p := 1;
+  if AddBOM then
+    PutWord($FEFF);
+
+  for i := 0 to High(ACodepoints) do
+  begin
+    c := ACodepoints[i];
+    if (c > $10FFFF) or ((c >= $D800) and (c <= $DFFF)) then
+      c := UNICODE_REPLACEMENT;
+
+    if c >= $10000 then
+    begin
+      Dec(c, $10000);
+      PutWord($D800 + (c shr 10));
+      PutWord($DC00 + (c and $3FF));
+    end
+    else
+      PutWord(c);
+  end;
+
+  SetLength(Result, p - 1);
 end;
 
-function TFFUnicodeHelpers.EscapePDFString(const Data: AnsiString): AnsiString;
+function UTF8ToUTF16BE(const S: string; AddBOM: Boolean): AnsiString;
 begin
-  // Escape special characters for PDF text encoding
-  // Replace / with (\), > with (\), and < with (\) as per PDF specification
-  Result := Data;
-  
-  if (pos('/', Result) > 0) then
-    Result := ReplaceString(Result, '/', '\\');
-    
-  if (pos('>', Result) > 0) then
-    Result := ReplaceString(Result, '>', '\\');
-    
-  if (pos('<', Result) > 0) then
-    Result := ReplaceString(Result, '<', '\\');
+  Result := CodepointsToUTF16BE(UTF8StringToCodepoints(S), AddBOM);
 end;
 
-{ TFFUnicodeHelpers Global Instance }
-
-constructor TFFUnicodeHelpers.Create;
-begin
-  inherited Create;
-  {$ifdef NEXTGEN}
-  InitializeCodepointSize;
-  {$endif}
-end;
-
-function TFFUnicodeHelpers.~TFFUnicodeHelpers;
-begin
-  Free;
-end;
-
-procedure TFFUnicodeHelpers.__init__();
+function HexEncode(const Data: AnsiString): string;
+const
+  Hex: array[0..15] of Char = '0123456789ABCDEF';
 var
   i: Integer;
+  b: Byte;
 begin
-  CFFUnicodeHelpers := TFFUnicodeHelpers.Create;
+  SetLength(Result, Length(Data) * 2);
+  for i := 1 to Length(Data) do
+  begin
+    b := Ord(Data[i]);
+    Result[i * 2 - 1] := Hex[b shr 4];
+    Result[i * 2] := Hex[b and $F];
+  end;
 end;
 
-procedure TFFUnicodeHelpers.__destroy();
+function EscapePDFString(const Data: AnsiString): AnsiString;
+var
+  i, n: Integer;
+  c: AnsiChar;
 begin
-  CFFUnicodeHelpers.Free;
+  SetLength(Result, Length(Data) * 2);
+  n := 0;
+  for i := 1 to Length(Data) do
+  begin
+    c := Data[i];
+    case c of
+      '\', '(', ')':
+        begin
+          Inc(n);
+          Result[n] := '\';
+          Inc(n);
+          Result[n] := c;
+        end;
+      #13:
+        begin
+          Inc(n);
+          Result[n] := '\';
+          Inc(n);
+          Result[n] := 'r';
+        end;
+      #10:
+        begin
+          Inc(n);
+          Result[n] := '\';
+          Inc(n);
+          Result[n] := 'n';
+        end;
+    else
+      Inc(n);
+      Result[n] := c;
+    end;
+  end;
+  SetLength(Result, n);
+end;
+
+function CodepointToWidth(AWidthUnits, AUnitsPerEm: Integer): Integer;
+begin
+  if AUnitsPerEm <= 0 then
+    AUnitsPerEm := 1000;
+  Result := Round(AWidthUnits * 1000 / AUnitsPerEm);
 end;
 
 end.

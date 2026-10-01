@@ -44,9 +44,6 @@ uses
   Classes,
   {$IfDef FPC}
    zstream,
-   {$IfDef MSWindows}
-    Windows,
-   {$EndIf}
   {$Else}
    ZLib,
   {$EndIf}
@@ -3463,30 +3460,89 @@ end;
 {%region Utility Functions}
 
 {$IfDef FPC}
-{$IfDef MSWindows}
+// Converte UTF-8 -> CP1252 (WinAnsi, o que as core fonts do PDF esperam) em Pascal puro
+function Utf8ToCP1252Portable(const AText: String): String;
 const
-  CP_WINANSI = 1252;
-
-function ConvertUtf8BytesToAnsiViaWinAPI(const AText: String): String;
+  Cp1252High: array[$80..$9F] of Word = (
+    $20AC, 0, $201A, $0192, $201E, $2026, $2020, $2021, $02C6, $2030, $0160, $2039, $0152, 0, $017D, 0,
+    0, $2018, $2019, $201C, $201D, $2022, $2013, $2014, $02DC, $2122, $0161, $203A, $0153, 0, $017E, $0178);
 var
-  wideLen, ansiLen: Integer;
-  wideBuf: array of WideChar;
+  i, n, len, cnt, j: Integer;
+  b: Byte;
+  cp: Cardinal;
+  ok: Boolean;
+  c: Char;
 begin
-  Result := '';
-  if AText = '' then
-    exit;
-  wideLen := MultiByteToWideChar(CP_UTF8, 0, PAnsiChar(AText), Length(AText), nil, 0);
-  if wideLen <= 0 then
-    exit;
-  SetLength(wideBuf, wideLen);
-  MultiByteToWideChar(CP_UTF8, 0, PAnsiChar(AText), Length(AText), @wideBuf[0], wideLen);
-  ansiLen := WideCharToMultiByte(CP_WINANSI, 0, @wideBuf[0], wideLen, nil, 0, nil, nil);
-  if ansiLen <= 0 then
-    exit;
-  SetLength(Result, ansiLen);
-  WideCharToMultiByte(CP_WINANSI, 0, @wideBuf[0], wideLen, @Result[1], ansiLen, nil, nil);
+  len := Length(AText);
+  SetLength(Result, len);
+  n := 0;
+  i := 1;
+  while i <= len do
+  begin
+    b := Ord(AText[i]);
+    if b < $80 then
+    begin
+      Inc(n);
+      Result[n] := AText[i];
+      Inc(i);
+      Continue;
+    end;
+
+    cnt := 0;
+    cp := 0;
+    if (b and $E0) = $C0 then
+    begin
+      cnt := 1;
+      cp := b and $1F;
+    end
+    else if (b and $F0) = $E0 then
+    begin
+      cnt := 2;
+      cp := b and $0F;
+    end
+    else if (b and $F8) = $F0 then
+    begin
+      cnt := 3;
+      cp := b and $07;
+    end;
+
+    ok := (cnt > 0) and (i + cnt <= len);
+    if ok then
+      for j := 1 to cnt do
+      begin
+        b := Ord(AText[i + j]);
+        if (b and $C0) <> $80 then
+        begin
+          ok := False;
+          Break;
+        end;
+        cp := (cp shl 6) or (b and $3F);
+      end;
+
+    if not ok then
+    begin
+      Inc(n);
+      Result[n] := AText[i];
+      Inc(i);
+      Continue;
+    end;
+
+    Inc(i, cnt + 1);
+    c := '?';
+    if (cp >= $A0) and (cp <= $FF) then
+      c := Chr(cp)
+    else
+      for j := Low(Cp1252High) to High(Cp1252High) do
+        if Cp1252High[j] = cp then
+        begin
+          c := Chr(j);
+          Break;
+        end;
+    Inc(n);
+    Result[n] := c;
+  end;
+  SetLength(Result, n);
 end;
-{$EndIf}
 {$EndIf}
 
 function TFPDF.ConvertTextToAnsi(const AText: String): String;
@@ -3508,11 +3564,7 @@ begin
        Result := Utf8ToAnsi(AText)
      {$ENDIF}
    {$ELSE}
-     {$IfDef MSWindows}
-       Result := ConvertUtf8BytesToAnsiViaWinAPI(AText);
-     {$Else}
-       Result := Utf8ToAnsi(AText);
-     {$EndIf}
+     Result := Utf8ToCP1252Portable(AText);
    {$ENDIF}
   end
   else

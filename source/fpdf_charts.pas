@@ -306,6 +306,7 @@ var
   k: Integer;
 begin
   n := Length(fCategories);
+  Result := nil;
   SetLength(Result, n);
   SetLength(sums, n);
   for i := 0 to n - 1 do

@@ -9,7 +9,7 @@
       <PathDelim Value="\"/>
       <SearchPaths>
         <OtherUnitFiles Value="..\source"/>
-        <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)\"/>
+        <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
       </SearchPaths>
     </CompilerOptions>
     <Description Value=" FPDF Pascal
@@ -31,6 +31,18 @@ FPDF is a class which allows to generate PDF files with pure Code, that is to sa
       <Item>
         <Filename Value="..\source\fpdf_report.pas"/>
         <UnitName Value="fpdf_report"/>
+      </Item>
+      <Item>
+        <Filename Value="..\source\fpdf_charts.pas"/>
+        <UnitName Value="fpdf_charts"/>
+      </Item>
+      <Item>
+        <Filename Value="..\source\fpdf_unicode.pas"/>
+        <UnitName Value="fpdf_unicode"/>
+      </Item>
+      <Item>
+        <Filename Value="..\source\ttfonts.pas"/>
+        <UnitName Value="ttfonts"/>
       </Item>
     </Files>
     <RequiredPkgs>
