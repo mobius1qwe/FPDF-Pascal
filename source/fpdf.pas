@@ -3,7 +3,7 @@
  FPDF Pascal
  https://github.com/Projeto-ACBr-Oficial/FPDF-Pascal
 
- Copyright (C) 2026 Projeto ACBr - Daniel Simões de Almeida
+ Copyright (C) 2026 Projeto ACBr - Daniel SimÃµes de Almeida
 
  Permission is hereby granted, free of charge, to any person obtaining a copy of
  this software and associated documentation files (the "Software"), to deal in
@@ -44,6 +44,9 @@ uses
   Classes,
   {$IfDef FPC}
    zstream,
+   {$IfDef MSWindows}
+    Windows,
+   {$EndIf}
   {$Else}
    ZLib,
   {$EndIf}
@@ -1435,6 +1438,7 @@ begin
     wMaxOther := (wOther-2*Self.cMargin)*1000/Self.FontSize;
 
     s := StringReplace(ConvertTextToAnsi(vText), CR, '', [rfReplaceAll]);
+
     Self.UseUTF8 := False;
     nb := Length(s);
     if ((nb>0) and (s[nb-1] = LF)) then
@@ -3458,6 +3462,33 @@ end;
 
 {%region Utility Functions}
 
+{$IfDef FPC}
+{$IfDef MSWindows}
+const
+  CP_WINANSI = 1252;
+
+function ConvertUtf8BytesToAnsiViaWinAPI(const AText: String): String;
+var
+  wideLen, ansiLen: Integer;
+  wideBuf: array of WideChar;
+begin
+  Result := '';
+  if AText = '' then
+    exit;
+  wideLen := MultiByteToWideChar(CP_UTF8, 0, PAnsiChar(AText), Length(AText), nil, 0);
+  if wideLen <= 0 then
+    exit;
+  SetLength(wideBuf, wideLen);
+  MultiByteToWideChar(CP_UTF8, 0, PAnsiChar(AText), Length(AText), @wideBuf[0], wideLen);
+  ansiLen := WideCharToMultiByte(CP_WINANSI, 0, @wideBuf[0], wideLen, nil, 0, nil, nil);
+  if ansiLen <= 0 then
+    exit;
+  SetLength(Result, ansiLen);
+  WideCharToMultiByte(CP_WINANSI, 0, @wideBuf[0], wideLen, @Result[1], ansiLen, nil, nil);
+end;
+{$EndIf}
+{$EndIf}
+
 function TFPDF.ConvertTextToAnsi(const AText: String): String;
 {$IFNDEF FPC}
  {$IFDEF UNICODE}
@@ -3477,7 +3508,11 @@ begin
        Result := Utf8ToAnsi(AText)
      {$ENDIF}
    {$ELSE}
-     Result := Utf8ToAnsi(AText)
+     {$IfDef MSWindows}
+       Result := ConvertUtf8BytesToAnsiViaWinAPI(AText);
+     {$Else}
+       Result := Utf8ToAnsi(AText);
+     {$EndIf}
    {$ENDIF}
   end
   else
